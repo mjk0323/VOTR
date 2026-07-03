@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Next.js
+frontend/.next/
+frontend/out/
+frontend/next-env.d.ts
+
+# Python
+**/__pycache__/
+*.pyc
+backend/.venv/
+ml/.venv/
+
+# Env secrets
+.env
+backend/.env
+frontend/.env.local
+
+# Runtime storage / artifacts
+backend/storage/
+ml/checkpoints/
+ml/export/
+ml/data/extracted/
+
+# AI Hub dataset (large, licensed, not for version control)
+177.다음색 가이드보컬 데이터/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+
+# Claude Code local session settings (not shared)
+.claude/settings.local.json
