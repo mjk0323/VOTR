@@ -13,12 +13,13 @@ from torch.utils.data import DataLoader
 from data.dataset import SingingNoteDataset
 from models.pitch_estimator import PitchEstimator
 from models.technique_classifier import LABELS, TechniqueClassifier
+from train import get_device
 
 CHECKPOINT_DIR = Path(__file__).resolve().parent / "checkpoints"
 
 
 def evaluate(val_dir: Path, batch_size: int = 32) -> None:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_device()
 
     val_ds = SingingNoteDataset(val_dir)
     val_loader = DataLoader(val_ds, batch_size=batch_size)
