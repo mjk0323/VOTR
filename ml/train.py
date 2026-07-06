@@ -16,7 +16,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
-from data.dataset import SingingNoteDataset
+from data.dataset import FileClusteredSampler, SingingNoteDataset
 from models.pitch_estimator import PitchEstimator
 from models.technique_classifier import TechniqueClassifier
 
@@ -42,13 +42,20 @@ def train(
     batch_size: int,
     lr: float,
     max_steps: int | None,
+    num_workers: int,
 ) -> None:
     device = get_device()
     print(f"training on device: {device}")
 
     train_ds = SingingNoteDataset(train_dir)
     print(f"train notes: {len(train_ds)}")
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        sampler=FileClusteredSampler(train_ds),
+        num_workers=num_workers,
+        persistent_workers=num_workers > 0,
+    )
 
     if val_dir is not None and val_dir.exists():
         val_ds = SingingNoteDataset(val_dir)
@@ -114,6 +121,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--max-steps", type=int, default=None, help="stop after N steps (for smoke tests)")
+    parser.add_argument("--num-workers", type=int, default=6, help="DataLoader worker processes")
     args = parser.parse_args()
 
-    train(args.train_dir, args.val_dir, args.epochs, args.batch_size, args.lr, args.max_steps)
+    train(args.train_dir, args.val_dir, args.epochs, args.batch_size, args.lr, args.max_steps, args.num_workers)

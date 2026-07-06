@@ -6,14 +6,22 @@ targets sourced directly from the dataset's ground-truth labels:
   - technique_target: [is_bending, is_vibrt, is_breath] multi-hot vector
     (for the vocal technique classifier)
 
-Audio I/O uses soundfile (partial reads via start/frames, so we never load a
-full song into memory - important given laptop RAM constraints). Note:
-torchaudio's I/O functions (load/info) are unavailable in this environment due
-to a torch/torchaudio version mismatch (see docs/ml_pipeline.md) - only
-torchaudio.transforms (pure PyTorch, no C++ extension) is used here.
+Audio I/O uses soundfile. Note: torchaudio's I/O functions (load/info) are
+unavailable in this environment due to a torch/torchaudio version mismatch
+(see docs/ml_pipeline.md) - only torchaudio.transforms (pure PyTorch, no C++
+extension) is used here.
+
+A song file has hundreds of notes on average, so re-opening and seeking into
+it per note (one full song per file, but each note is a separate small read)
+made per-note file I/O the dominant training cost. `_load_note_audio` instead
+keeps a small per-process LRU cache of fully-decoded songs and slices notes
+out of memory; `FileClusteredSampler` shuffles at the file level (not the raw
+note level) so that consecutive notes fed to a DataLoader worker tend to share
+a file, keeping that cache's hit rate high.
 """
 
 import json
+from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,7 +29,7 @@ import numpy as np
 import soundfile as sf
 import torch
 import torchaudio.transforms as T
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 
 MIN_NOTE_DURATION_SEC = 0.05
 TARGET_SR = 22050
@@ -29,6 +37,7 @@ N_MELS = 80
 N_FFT = 1024
 HOP_LENGTH = 256
 MAX_FRAMES = 87  # ~1s of audio at hop_length=256, sr=22050 - covers most single notes
+AUDIO_CACHE_SIZE = 4  # decoded songs kept in memory per DataLoader worker process
 
 
 @dataclass
@@ -77,21 +86,40 @@ def build_note_index(pairs: list[tuple[Path, Path]]) -> list[NoteRecord]:
     return records
 
 
-def _load_note_audio(record: NoteRecord, sr: int = TARGET_SR) -> np.ndarray:
-    info = sf.info(str(record.wav_path))
-    native_sr = info.samplerate
-    start_frame = int(record.start_time * native_sr)
-    num_frames = max(1, int((record.end_time - record.start_time) * native_sr))
+_audio_cache: "OrderedDict[Path, tuple[np.ndarray, int]]" = OrderedDict()
 
-    y, file_sr = sf.read(
-        str(record.wav_path), start=start_frame, frames=num_frames, dtype="float32", always_2d=False
-    )
+
+def _load_full_song(wav_path: Path) -> tuple[np.ndarray, int]:
+    cached = _audio_cache.get(wav_path)
+    if cached is not None:
+        _audio_cache.move_to_end(wav_path)
+        return cached
+
+    y, native_sr = sf.read(str(wav_path), dtype="float32", always_2d=False)
     if y.ndim > 1:
         y = y.mean(axis=1)
 
-    if file_sr != sr:
+    _audio_cache[wav_path] = (y, native_sr)
+    if len(_audio_cache) > AUDIO_CACHE_SIZE:
+        _audio_cache.popitem(last=False)
+    return y, native_sr
+
+
+def _load_note_audio(record: NoteRecord, sr: int = TARGET_SR) -> np.ndarray:
+    full_audio, native_sr = _load_full_song(record.wav_path)
+    start_frame = int(record.start_time * native_sr)
+    end_frame = int(record.end_time * native_sr)
+    y = full_audio[start_frame:end_frame] if start_frame < len(full_audio) else np.empty(0, dtype=np.float32)
+
+    if len(y) == 0:
+        # label timestamp falls beyond the actual audio duration (rare data mismatch) -
+        # return near-silence of the expected length rather than crashing the resample below
+        target_len = max(1, int(round((record.end_time - record.start_time) * sr)))
+        return np.zeros(target_len, dtype=np.float32)
+
+    if native_sr != sr:
         # lightweight resample without adding a librosa dependency to ml/
-        duration = len(y) / file_sr
+        duration = len(y) / native_sr
         target_len = max(1, int(round(duration * sr)))
         x_old = np.linspace(0, 1, num=len(y), endpoint=False)
         x_new = np.linspace(0, 1, num=target_len, endpoint=False)
@@ -125,6 +153,11 @@ class SingingNoteDataset(Dataset):
         self.pairs = find_pairs(split_dir)
         self.index = build_note_index(self.pairs)
 
+        groups: dict[Path, list[int]] = defaultdict(list)
+        for i, record in enumerate(self.index):
+            groups[record.wav_path].append(i)
+        self.file_groups: list[list[int]] = list(groups.values())
+
     def __len__(self) -> int:
         return len(self.index)
 
@@ -139,3 +172,22 @@ class SingingNoteDataset(Dataset):
             dtype=torch.float32,
         )
         return log_mel, midi_target, technique_target
+
+
+class FileClusteredSampler(Sampler[int]):
+    """Shuffles song files, then notes within each file - keeps notes from the
+    same file close together in the yielded order (unlike a plain random
+    shuffle) so `_load_full_song`'s per-worker cache stays warm."""
+
+    def __init__(self, dataset: SingingNoteDataset):
+        self.file_groups = dataset.file_groups
+
+    def __iter__(self):
+        file_order = torch.randperm(len(self.file_groups)).tolist()
+        for file_idx in file_order:
+            group = self.file_groups[file_idx]
+            for i in torch.randperm(len(group)).tolist():
+                yield group[i]
+
+    def __len__(self) -> int:
+        return sum(len(g) for g in self.file_groups)
