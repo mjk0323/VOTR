@@ -36,9 +36,8 @@ def evaluate(val_dir: Path, batch_size: int = 32) -> None:
     technique_model.eval()
 
     abs_errors_semitones: list[float] = []
-    tp = [0] * len(LABELS)
-    fp = [0] * len(LABELS)
-    fn = [0] * len(LABELS)
+    all_probs: list[torch.Tensor] = []
+    all_targets: list[torch.Tensor] = []
 
     with torch.no_grad():
         for mel, midi_target, technique_target in val_loader:
@@ -53,24 +52,35 @@ def evaluate(val_dir: Path, batch_size: int = 32) -> None:
             abs_errors_semitones.extend(errors[not_breath].cpu().tolist())
 
             technique_logits = technique_model(mel)
-            technique_pred = (torch.sigmoid(technique_logits) > 0.5).float()
-
-            for i in range(len(LABELS)):
-                pred_i = technique_pred[:, i]
-                target_i = technique_target[:, i]
-                tp[i] += int(((pred_i == 1) & (target_i == 1)).sum().item())
-                fp[i] += int(((pred_i == 1) & (target_i == 0)).sum().item())
-                fn[i] += int(((pred_i == 0) & (target_i == 1)).sum().item())
+            all_probs.append(torch.sigmoid(technique_logits).cpu())
+            all_targets.append(technique_target.cpu())
 
     mean_abs_error_semitones = sum(abs_errors_semitones) / max(1, len(abs_errors_semitones))
     mean_abs_error_cents = mean_abs_error_semitones * 100
     print(f"pitch: mean abs error = {mean_abs_error_semitones:.3f} semitones ({mean_abs_error_cents:.1f} cents)")
 
+    probs = torch.cat(all_probs)  # (N, len(LABELS))
+    targets = torch.cat(all_targets)
+
+    # Sweep the decision threshold per label and report the one that maximizes F1
+    # (not raw accuracy - these labels are all <10% positive, so "predict never"
+    # already scores >90% accuracy without being useful) rather than assuming 0.5.
     for i, label in enumerate(LABELS):
-        precision = tp[i] / max(1, tp[i] + fp[i])
-        recall = tp[i] / max(1, tp[i] + fn[i])
-        f1 = 2 * precision * recall / max(1e-9, precision + recall)
-        print(f"{label}: precision={precision:.3f} recall={recall:.3f} f1={f1:.3f}")
+        probs_i = probs[:, i]
+        targets_i = targets[:, i]
+        best = (0.0, 0.5, 0.0, 0.0)  # f1, threshold, precision, recall
+        for threshold in torch.linspace(0.05, 0.95, 91).tolist():
+            pred_i = (probs_i > threshold).float()
+            tp = ((pred_i == 1) & (targets_i == 1)).sum().item()
+            fp = ((pred_i == 1) & (targets_i == 0)).sum().item()
+            fn = ((pred_i == 0) & (targets_i == 1)).sum().item()
+            precision = tp / max(1, tp + fp)
+            recall = tp / max(1, tp + fn)
+            f1 = 2 * precision * recall / max(1e-9, precision + recall)
+            if f1 > best[0]:
+                best = (f1, threshold, precision, recall)
+        f1, threshold, precision, recall = best
+        print(f"{label}: best_threshold={threshold:.2f} precision={precision:.3f} recall={recall:.3f} f1={f1:.3f}")
 
 
 if __name__ == "__main__":
