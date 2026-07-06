@@ -5,6 +5,7 @@ test (a few batches on a laptop) finishes in seconds - real training runs on
 a desktop GPU per docs/ml_pipeline.md.
 """
 
+import torch
 import torch.nn as nn
 
 
@@ -57,3 +58,39 @@ class FreqPreservingCNNBackbone(nn.Module):
     def forward(self, x):
         # x: (batch, 1, n_mels, frames) -> (batch, out_channels * n_mels)
         return self.conv(x).flatten(1)
+
+
+class TimePreservingCNNBackbone(nn.Module):
+    """Like SmallCNNBackbone, but only pools over frequency - the time axis
+    stays resolved all the way to the output. Vibrato (an oscillation) and
+    pitch bending (a directional drift) are both defined by how the sound
+    changes *across frames within the note*; SmallCNNBackbone's full 2D
+    global average pool collapses time into a single snapshot and erases
+    exactly that trajectory. Pools mean and std over time at the end (not
+    just mean) since a static note and an oscillating one can have the same
+    average but very different variance."""
+
+    def __init__(self, out_channels: int = 32):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(1, 16, kernel_size=3, padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d((2, 1)),  # freq 80 -> 40, keep every time frame
+            nn.Conv2d(16, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d((2, 1)),  # freq 40 -> 20
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d((2, 1)),  # freq 20 -> 10
+        )
+        self.out_features = out_channels * 2  # mean + std pooled over time
+
+    def forward(self, x):
+        # x: (batch, 1, n_mels, frames) -> (batch, C, freq, frames) -> (batch, out_channels * 2)
+        # mean(dim=2) instead of AdaptiveAvgPool2d((1, None)) - the latter's dynamic
+        # output size isn't exportable to ONNX ("output_size is not constant")
+        feat = self.conv(x).mean(dim=2)  # collapse remaining frequency -> (batch, C, frames)
+        return torch.cat([feat.mean(dim=2), feat.std(dim=2)], dim=1)

@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader
 from data.dataset import FileClusteredSampler, SingingNoteDataset
 from models.pitch_estimator import PitchEstimator
 from models.pitch_estimator import pitch_loss as compute_pitch_loss
-from models.technique_classifier import TechniqueClassifier
+from models.technique_classifier import POS_WEIGHT, TechniqueClassifier
 
 CHECKPOINT_DIR = Path(__file__).resolve().parent / "checkpoints"
 
@@ -67,7 +67,7 @@ def train(
 
     params = list(pitch_model.parameters()) + list(technique_model.parameters())
     optimizer = torch.optim.Adam(params, lr=lr)
-    technique_loss_fn = torch.nn.BCEWithLogitsLoss()
+    technique_loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=POS_WEIGHT.to(device))
 
     step = 0
     for epoch in range(epochs):
