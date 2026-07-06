@@ -18,6 +18,7 @@ from torch.utils.data import DataLoader
 
 from data.dataset import FileClusteredSampler, SingingNoteDataset
 from models.pitch_estimator import PitchEstimator
+from models.pitch_estimator import pitch_loss as compute_pitch_loss
 from models.technique_classifier import TechniqueClassifier
 
 CHECKPOINT_DIR = Path(__file__).resolve().parent / "checkpoints"
@@ -66,7 +67,6 @@ def train(
 
     params = list(pitch_model.parameters()) + list(technique_model.parameters())
     optimizer = torch.optim.Adam(params, lr=lr)
-    pitch_loss_fn = torch.nn.MSELoss()
     technique_loss_fn = torch.nn.BCEWithLogitsLoss()
 
     step = 0
@@ -83,10 +83,11 @@ def train(
             technique_target = technique_target.to(device)
 
             optimizer.zero_grad()
-            pitch_pred = pitch_model(mel)
+            pitch_logits = pitch_model(mel)
             technique_logits = technique_model(mel)
 
-            pitch_loss = pitch_loss_fn(pitch_pred, midi_target)
+            breath_mask = 1.0 - technique_target[:, 2]  # breath notes have no real pitch
+            pitch_loss = compute_pitch_loss(pitch_logits, midi_target, breath_mask)
             technique_loss = technique_loss_fn(technique_logits, technique_target)
             loss = pitch_loss + technique_loss
             loss.backward()
@@ -102,7 +103,7 @@ def train(
 
         avg_pitch = running_pitch_loss / max(1, n_batches)
         avg_technique = running_technique_loss / max(1, n_batches)
-        print(f"epoch {epoch + 1}/{epochs} - pitch_mse={avg_pitch:.3f} technique_bce={avg_technique:.3f}")
+        print(f"epoch {epoch + 1}/{epochs} - pitch_kl={avg_pitch:.4f} technique_bce={avg_technique:.3f}")
 
         if max_steps is not None and step >= max_steps:
             break

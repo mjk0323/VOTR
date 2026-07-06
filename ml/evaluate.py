@@ -11,7 +11,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from data.dataset import SingingNoteDataset
-from models.pitch_estimator import PitchEstimator
+from models.pitch_estimator import PitchEstimator, decode_pitch
 from models.technique_classifier import LABELS, TechniqueClassifier
 from train import get_device
 
@@ -46,8 +46,11 @@ def evaluate(val_dir: Path, batch_size: int = 32) -> None:
             midi_target = midi_target.to(device)
             technique_target = technique_target.to(device)
 
-            pitch_pred = pitch_model(mel)
-            abs_errors_semitones.extend((pitch_pred - midi_target).abs().cpu().tolist())
+            pitch_logits = pitch_model(mel)
+            pitch_pred = decode_pitch(pitch_logits)
+            not_breath = technique_target[:, 2] < 0.5  # breath notes have no real pitch
+            errors = (pitch_pred - midi_target).abs()
+            abs_errors_semitones.extend(errors[not_breath].cpu().tolist())
 
             technique_logits = technique_model(mel)
             technique_pred = (torch.sigmoid(technique_logits) > 0.5).float()
