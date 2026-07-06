@@ -4,7 +4,9 @@ export interface AnalysisMetrics {
     mean_cents_deviation: number;
     pitch_stability_std_semitones: number;
     voiced_ratio: number;
-    vibrato_rate_hz: number | null;
+    vibrato_detected_ratio: number;
+    bending_detected_ratio: number;
+    breath_detected_ratio: number;
   };
   rhythm: {
     estimated_tempo_bpm: number;

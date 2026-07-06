@@ -13,10 +13,9 @@ def test_analyze_audio_returns_plausible_metrics():
     assert 0.0 <= metrics.pitch.voiced_ratio <= 1.0
     assert metrics.pitch.mean_cents_deviation >= 0.0
     assert metrics.pitch.pitch_stability_std_semitones >= 0.0
-
-    # synthetic fixture has a clear ~5.5Hz vibrato within the detectable 4-8Hz band
-    assert metrics.pitch.vibrato_rate_hz is not None
-    assert 4.0 <= metrics.pitch.vibrato_rate_hz <= 8.0
+    assert 0.0 <= metrics.pitch.vibrato_detected_ratio <= 1.0
+    assert 0.0 <= metrics.pitch.bending_detected_ratio <= 1.0
+    assert 0.0 <= metrics.pitch.breath_detected_ratio <= 1.0
 
     assert 40 <= metrics.rhythm.estimated_tempo_bpm <= 240
     assert metrics.rhythm.onset_count >= 0

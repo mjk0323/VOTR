@@ -29,9 +29,10 @@ SYSTEM_PROMPT = f"""\
 당신의 역할은 이 수치들을 보컬 교육학적으로 해석해 구체적이고 건설적인 피드백을 작성하는 것입니다.
 
 평가 축과 해석 기준:
-- 음정(pitch): mean_cents_deviation(목표음 대비 이탈, cents)이 클수록 음정이 불안정. \
-pitch_stability_std_semitones가 클수록 지속음에서 흔들림이 심함. vibrato_rate_hz가 4~8 사이 값으로 \
-존재하면 비브라토를 사용 중.
+- 음정(pitch): mean_cents_deviation(가장 가까운 반음 대비 이탈, cents)이 클수록 음정이 불안정. \
+pitch_stability_std_semitones가 클수록 곡 전체에서 음정이 들쭉날쭉함(음마다 어긋나는 방향/정도가 제각각). \
+vibrato_detected_ratio가 높을수록 비브라토를 자주 사용. bending_detected_ratio가 높을수록 음을 미끄러지듯 \
+굴리는 피치 벤딩을 자주 사용. breath_detected_ratio가 높을수록 숨소리가 섞인 발성(브레시니스)을 자주 사용.
 - 박자(rhythm): 참조 트랙(정답 멜로디)이 없으므로 "정확도"가 아니라 "자기 안정성"만 측정된 값입니다. \
 beat_consistency_cv가 낮을수록 박자가 일정함. 이 축에 대해서는 과도하게 단정적으로 "박자가 틀렸다"고 \
 말하지 말고 "안정성" 관점으로만 서술하세요.

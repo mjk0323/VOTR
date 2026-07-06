@@ -5,7 +5,9 @@ class PitchMetrics(BaseModel):
     mean_cents_deviation: float
     pitch_stability_std_semitones: float
     voiced_ratio: float
-    vibrato_rate_hz: float | None = None
+    vibrato_detected_ratio: float
+    bending_detected_ratio: float
+    breath_detected_ratio: float
 
 
 class RhythmMetrics(BaseModel):

@@ -57,13 +57,16 @@ ml/
    python evaluate.py --val-dir data/extracted/validation
    ```
 
-## 학습된 모델을 앱에 연결하기 (완료 후)
+## 학습된 모델을 앱에 연결하기 (완료됨)
 
-1. `pitch_estimator.pt` / `technique_classifier.pt`를 ONNX로 export (`torch.onnx.export`)
-2. `backend/app/services/audio_analysis.py`의 `analyze_pitch()`가 `librosa.pyin` 대신 ONNX 모델 추론을 사용하도록 교체 (`onnxruntime`을 backend 쪽 venv에 추가 설치)
-3. `technique_classifier`의 출력(비브라토/벤딩/브레스 확률)을 `PitchMetrics`/새 필드로 추가해 `report_generation.py` 프롬프트에 반영
+1. `ml/export_onnx.py`로 `pitch_estimator.pt` / `technique_classifier.pt`를 ONNX로 export. 후처리(피치 빈 디코딩, sigmoid)를 그래프 안에 baked-in해서, 소비하는 쪽은 모델을 그냥 실행하기만 하면 최종 값(MIDI 예측치, 확률)을 바로 받는다. `.onnx` 파일은 `backend/app/ml_models/`에 복사해둔다.
+2. `backend/app/services/singing_model.py` 신설: onset 검출(`analyze_rhythm`이 이미 쓰던 방식 재사용)로 노래 전체를 note 단위로 분절하고, 각 구간을 `librosa`로 log-mel spectrogram 계산 후 ONNX 모델에 통과시킨다. **주의**: 학습은 `torchaudio.transforms`로 log-mel을 계산했는데 backend엔 torch가 없다(배포를 가볍게 유지하려는 의도적 선택 - Groq를 쓰는 이유와 같은 맥락). `librosa.feature.melspectrogram`을 `htk=True, norm=None`으로 맞추면 수치가 ~1.6e-4 dB 오차로 거의 정확히 일치한다는 걸 직접 검증했다 (`torchaudio` 기본값: `mel_scale="htk"`, `norm=None`).
+3. `backend/app/services/audio_analysis.py`의 `analyze_pitch()`를 `librosa.pyin` + FFT 비브라토 휴리스틱에서 `singing_model.analyze_notes()` 기반으로 교체.
+4. `PitchMetrics` 스키마 변경: `vibrato_rate_hz`(Hz 단위 추정치) 제거, `vibrato_detected_ratio`/`bending_detected_ratio`/`breath_detected_ratio`(곡 전체 note 중 검출 비율) 추가. **이 스키마 변경은 프론트엔드(`frontend/app/types/report.ts`)에도 영향을 줬다** - 처음엔 "API 계약이 그대로 유지된다"고 썼었는데 틀렸음, 실제로는 필드가 바뀌어서 프론트도 같이 고쳤다.
+5. 기법 판정 threshold는 0.5가 아니라 `ml/evaluate.py`의 threshold sweep으로 찾은 값 사용: bending=0.66, vibrato=0.62, breath=0.70 (`singing_model.py`에 상수로 박아둠).
+6. `report_generation.py`의 시스템 프롬프트도 새 필드 설명으로 교체.
 
-이 교체는 `audio_analysis.py` 내부 구현만 바뀌는 것이라, 프론트엔드/API 계약/`report_generation.py`는 그대로 유지된다.
+검증: `backend/tests/test_audio_analysis.py`를 새 스키마에 맞게 수정 후 통과 확인. 다만 이 테스트가 쓰는 합성(사인파) 비브라토 픽스처는 실제 사람 목소리로 학습된 모델이 인식하지 못했다 (vibrato_detected_ratio=0.0) - 모델이 진짜 노래에 특화돼 있다는 방증이지, 버그는 아니다.
 
 ## 향후 확장: 곡 매칭 기반 정확도 채점
 

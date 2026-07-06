@@ -2,9 +2,9 @@
 
 Computes objective metrics per axis (pitch, rhythm, tone, dynamics) from a
 normalized mono WAV. These feed report_generation.py, which turns them into
-qualitative feedback. Track B (ml/) will later replace analyze_pitch's F0
-estimation and add technique detection (vibrato/bending/breath) trained on
-real singing data instead of the heuristics below.
+qualitative feedback. analyze_pitch() uses the Track B (ml/) models trained
+on real singing data (AI Hub "다음색 가이드보컬") instead of librosa.pyin +
+an FFT vibrato heuristic - see ml/docs/ml_pipeline.md and singing_model.py.
 """
 
 from pathlib import Path
@@ -13,72 +13,42 @@ import librosa
 import numpy as np
 import parselmouth
 from parselmouth.praat import call
-from scipy.ndimage import median_filter
 
 from app.schemas.metrics import AnalysisMetrics, DynamicsMetrics, PitchMetrics, RhythmMetrics, ToneMetrics
-
-PITCH_FMIN = librosa.note_to_hz("C2")
-PITCH_FMAX = librosa.note_to_hz("C7")
-VIBRATO_BAND_HZ = (4.0, 8.0)
-
-
-def _estimate_vibrato_rate(detrended_semitones: np.ndarray, frame_rate: float) -> float | None:
-    n = len(detrended_semitones)
-    if n < frame_rate:  # need at least ~1s of voiced signal to resolve 4-8Hz band
-        return None
-
-    windowed = detrended_semitones * np.hanning(n)
-    fft_mag = np.abs(np.fft.rfft(windowed))
-    freqs = np.fft.rfftfreq(n, d=1.0 / frame_rate)
-
-    band_mask = (freqs >= VIBRATO_BAND_HZ[0]) & (freqs <= VIBRATO_BAND_HZ[1])
-    if not np.any(band_mask):
-        return None
-
-    band_freqs = freqs[band_mask]
-    band_mag = fft_mag[band_mask]
-    peak_idx = int(np.argmax(band_mag))
-
-    overall_mean = float(np.mean(fft_mag)) + 1e-9
-    if band_mag[peak_idx] < 3 * overall_mean:
-        return None
-
-    return round(float(band_freqs[peak_idx]), 2)
+from app.services.singing_model import analyze_notes
 
 
 def analyze_pitch(y: np.ndarray, sr: int) -> PitchMetrics:
-    f0, _voiced_flag, _voiced_prob = librosa.pyin(y, fmin=PITCH_FMIN, fmax=PITCH_FMAX, sr=sr)
-    voiced_mask = ~np.isnan(f0)
-    voiced_ratio = float(np.mean(voiced_mask)) if len(f0) else 0.0
-
-    if not np.any(voiced_mask):
+    notes = analyze_notes(y, sr)
+    if not notes:
         return PitchMetrics(
             mean_cents_deviation=0.0,
             pitch_stability_std_semitones=0.0,
-            voiced_ratio=voiced_ratio,
-            vibrato_rate_hz=None,
+            voiced_ratio=0.0,
+            vibrato_detected_ratio=0.0,
+            bending_detected_ratio=0.0,
+            breath_detected_ratio=0.0,
         )
 
-    midi_voiced = librosa.hz_to_midi(f0[voiced_mask])
+    deviations = np.array([n.cents_deviation for n in notes])
+    mean_cents_deviation = float(np.mean(np.abs(deviations)))
+    pitch_stability_std = float(np.std(deviations / 100.0))
 
-    nearest_semitone = np.round(midi_voiced)
-    cents_deviation = (midi_voiced - nearest_semitone) * 100
-    mean_cents_deviation = float(np.mean(np.abs(cents_deviation)))
+    total_duration = len(y) / sr
+    covered_duration = sum(n.end_time - n.start_time for n in notes)
+    voiced_ratio = covered_duration / total_duration if total_duration > 0 else 0.0
 
-    hop_length = 512
-    frame_rate = sr / hop_length
-    window = max(3, int(round(0.5 * frame_rate)))
-    if window % 2 == 0:
-        window += 1
-    local_median = median_filter(midi_voiced, size=window, mode="nearest")
-    detrended = midi_voiced - local_median
-    pitch_stability_std = float(np.std(detrended))
+    vibrato_ratio = float(np.mean([n.is_vibrato for n in notes]))
+    bending_ratio = float(np.mean([n.is_bending for n in notes]))
+    breath_ratio = float(np.mean([n.is_breath for n in notes]))
 
     return PitchMetrics(
         mean_cents_deviation=round(mean_cents_deviation, 1),
         pitch_stability_std_semitones=round(pitch_stability_std, 3),
         voiced_ratio=round(voiced_ratio, 3),
-        vibrato_rate_hz=_estimate_vibrato_rate(detrended, frame_rate),
+        vibrato_detected_ratio=round(vibrato_ratio, 3),
+        bending_detected_ratio=round(bending_ratio, 3),
+        breath_detected_ratio=round(breath_ratio, 3),
     )
 
 
